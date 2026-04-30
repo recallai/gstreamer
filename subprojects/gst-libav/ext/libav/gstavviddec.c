@@ -2062,6 +2062,9 @@ gst_ffmpegviddec_video_frame (GstFFMpegVidDec * ffmpegdec,
   GST_LOG_OBJECT (ffmpegdec, "Got frame from ffmpeg, sfn # %"
       G_GUINT32_FORMAT, output_frame->system_frame_number);
 
+  GST_LOG_OBJECT (ffmpegdec, "Got frame from ffmpeg, sfn # %"
+      G_GUINT32_FORMAT, output_frame->system_frame_number);
+
   /* also give back a buffer allocated by the frame, if any */
   if (out_dframe) {
     gst_buffer_replace (&output_frame->output_buffer, out_dframe->buffer);
