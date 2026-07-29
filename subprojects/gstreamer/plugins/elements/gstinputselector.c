@@ -128,6 +128,7 @@ static GstPad *gst_input_selector_get_linked_pad (GstInputSelector * sel,
     GstPad * pad, gboolean strict);
 static void
 gst_input_selector_maybe_commit_active_pad (GstInputSelector * self);
+static gboolean gst_input_selector_all_eos (GstInputSelector * sel);
 
 #define GST_TYPE_SELECTOR_PAD \
   (gst_selector_pad_get_type())
@@ -475,6 +476,13 @@ gst_input_selector_eos_wait (GstInputSelector * self, GstSelectorPad * pad,
 {
   while (!self->eos && !self->flushing && !pad->flushing
       && !pad->being_released) {
+    if (pad == GST_SELECTOR_PAD_CAST (self->active_sinkpad) && pad->eos_sent
+        && gst_input_selector_all_eos (self)) {
+      self->eos = TRUE;
+      GST_INPUT_SELECTOR_BROADCAST (self);
+      break;
+    }
+
     if (pad == GST_SELECTOR_PAD_CAST (self->active_sinkpad) && pad->eos
         && !pad->eos_sent) {
       GST_DEBUG_OBJECT (pad, "send EOS event");
