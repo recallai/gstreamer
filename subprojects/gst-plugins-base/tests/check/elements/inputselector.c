@@ -655,6 +655,110 @@ GST_START_TEST (eos_on_remaining_inactive_pad)
 
 GST_END_TEST;
 
+static gpointer
+push_eos (GstPad * pad)
+{
+  return GINT_TO_POINTER (gst_pad_push_event (pad, gst_event_new_eos ()));
+}
+
+GST_START_TEST (eos_on_active_pad_before_inactive_pad_release)
+{
+  GstElement *pipeline, *active_src, *inactive_src, *selector, *sink;
+  GstPad *active_srcpad, *active_sinkpad;
+  GstPad *inactive_srcpad, *inactive_sinkpad;
+  GstPad *sinkpad;
+  GstBuffer *buf;
+  GThread *eos_thread;
+  GError *error = NULL;
+  EosReceivedCtx eos_received_ctx = { 0 };
+  gboolean eos_res;
+
+  pipeline = gst_pipeline_new (NULL);
+
+  active_src = gst_element_factory_make ("appsrc", "active-src");
+  fail_unless (active_src != NULL);
+
+  inactive_src = gst_element_factory_make ("appsrc", "inactive-src");
+  fail_unless (inactive_src != NULL);
+
+  selector = gst_element_factory_make ("input-selector", NULL);
+  fail_unless (selector != NULL);
+  g_object_set (selector, "sync-mode", 1, "drop-backwards", TRUE, NULL);
+
+  sink = gst_element_factory_make ("fakesink", NULL);
+  fail_unless (sink != NULL);
+  g_object_set (sink, "sync", FALSE, "async", FALSE, NULL);
+
+  gst_bin_add_many (GST_BIN (pipeline), active_src, inactive_src, selector,
+      sink, NULL);
+
+  active_srcpad = gst_element_get_static_pad (active_src, "src");
+  active_sinkpad = gst_element_request_pad_simple (selector, "sink_%u");
+  fail_unless (gst_pad_link (active_srcpad, active_sinkpad) == GST_PAD_LINK_OK);
+
+  inactive_srcpad = gst_element_get_static_pad (inactive_src, "src");
+  inactive_sinkpad = gst_element_request_pad_simple (selector, "sink_%u");
+  fail_unless (gst_pad_link (inactive_srcpad,
+          inactive_sinkpad) == GST_PAD_LINK_OK);
+
+  fail_unless (gst_element_link (selector, sink));
+
+  g_object_set (selector, "active-pad", active_sinkpad, NULL);
+
+  sinkpad = gst_element_get_static_pad (sink, "sink");
+
+  g_mutex_init (&eos_received_ctx.lock);
+  g_cond_init (&eos_received_ctx.cond);
+  gst_pad_add_probe (sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      eos_received_probe, &eos_received_ctx, NULL);
+  gst_object_unref (sinkpad);
+
+  fail_if (gst_element_set_state (pipeline,
+          GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE);
+
+  buf = gst_buffer_new_wrapped (g_memdup2 ("a", 1), 1);
+  GST_BUFFER_PTS (buf) = 0;
+  fail_unless (gst_app_src_push_buffer (GST_APP_SRC (active_src),
+          buf) == GST_FLOW_OK);
+
+  buf = gst_buffer_new_wrapped (g_memdup2 ("b", 1), 1);
+  GST_BUFFER_PTS (buf) = 0;
+  fail_unless (gst_app_src_push_buffer (GST_APP_SRC (inactive_src),
+          buf) == GST_FLOW_OK);
+
+  g_usleep (BUFFER_INTERVAL);
+
+  eos_thread =
+      g_thread_try_new ("push_eos", (GThreadFunc) push_eos,
+      active_srcpad, &error);
+  fail_unless (error == NULL);
+
+  g_mutex_lock (&eos_received_ctx.lock);
+  while (!eos_received_ctx.eos_received)
+    g_cond_wait (&eos_received_ctx.cond, &eos_received_ctx.lock);
+  g_mutex_unlock (&eos_received_ctx.lock);
+
+  fail_unless (gst_pad_unlink (inactive_srcpad, inactive_sinkpad));
+  gst_element_release_request_pad (selector, inactive_sinkpad);
+
+  eos_res = GPOINTER_TO_INT (g_thread_join (eos_thread));
+  fail_unless (eos_res);
+
+  fail_unless_equals_int (gst_element_set_state (pipeline,
+          GST_STATE_NULL), GST_STATE_CHANGE_SUCCESS);
+
+  gst_object_unref (active_srcpad);
+  gst_object_unref (active_sinkpad);
+  gst_object_unref (inactive_srcpad);
+  gst_object_unref (inactive_sinkpad);
+  gst_object_unref (pipeline);
+
+  g_mutex_clear (&eos_received_ctx.lock);
+  g_cond_clear (&eos_received_ctx.cond);
+}
+
+GST_END_TEST;
+
 static Suite *
 inputselector_suite (void)
 {
@@ -666,6 +770,7 @@ inputselector_suite (void)
   tcase_add_test (tc, stress_test);
   tcase_add_test (tc, pad_release_stress_test);
   tcase_add_test (tc, eos_on_remaining_inactive_pad);
+  tcase_add_test (tc, eos_on_active_pad_before_inactive_pad_release);
 
   return s;
 }
