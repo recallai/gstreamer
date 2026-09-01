@@ -219,7 +219,8 @@ static gboolean gst_bin_set_clock_func (GstElement * element, GstClock * clock);
 static void gst_bin_handle_message_func (GstBin * bin, GstMessage * message);
 static gboolean gst_bin_send_event (GstElement * element, GstEvent * event);
 static GstBusSyncReply bin_bus_handler (GstBus * bus,
-    GstMessage * message, GstBin * bin);
+    GstMessage * message, gpointer user_data);
+static void bin_bus_handler_data_free (gpointer user_data);
 static gboolean gst_bin_query (GstElement * element, GstQuery * query);
 static void gst_bin_set_context (GstElement * element, GstContext * context);
 
@@ -483,6 +484,7 @@ static void
 gst_bin_init (GstBin * bin)
 {
   GstBus *bus;
+  GWeakRef *bin_ref;
 
   bin->numchildren = 0;
   bin->children = NULL;
@@ -497,8 +499,10 @@ gst_bin_init (GstBin * bin)
   bin->child_bus = bus;
   GST_DEBUG_OBJECT (bin, "using bus %" GST_PTR_FORMAT " to listen to children",
       bus);
-  gst_bus_set_sync_handler (bus, (GstBusSyncHandler) bin_bus_handler, bin,
-      NULL);
+  bin_ref = g_new (GWeakRef, 1);
+  g_weak_ref_init (bin_ref, bin);
+  gst_bus_set_sync_handler (bus, bin_bus_handler, bin_ref,
+      bin_bus_handler_data_free);
 
   bin->priv = gst_bin_get_instance_private (bin);
   bin->priv->asynchandling = DEFAULT_ASYNC_HANDLING;
@@ -3250,9 +3254,17 @@ interrupted:
 }
 
 static GstBusSyncReply
-bin_bus_handler (GstBus * bus, GstMessage * message, GstBin * bin)
+bin_bus_handler (GstBus * bus, GstMessage * message, gpointer user_data)
 {
+  GWeakRef *bin_ref = user_data;
+  GstBin *bin;
   GstBinClass *bclass;
+
+  bin = g_weak_ref_get (bin_ref);
+  if (G_UNLIKELY (bin == NULL)) {
+    gst_message_unref (message);
+    return GST_BUS_DROP;
+  }
 
   bclass = GST_BIN_GET_CLASS (bin);
   if (bclass->handle_message)
@@ -3260,7 +3272,18 @@ bin_bus_handler (GstBus * bus, GstMessage * message, GstBin * bin)
   else
     gst_message_unref (message);
 
+  gst_object_unref (bin);
+
   return GST_BUS_DROP;
+}
+
+static void
+bin_bus_handler_data_free (gpointer user_data)
+{
+  GWeakRef *bin_ref = user_data;
+
+  g_weak_ref_clear (bin_ref);
+  g_free (bin_ref);
 }
 
 static void

@@ -1490,6 +1490,115 @@ GST_START_TEST (test_state_failure_remove)
 
 GST_END_TEST;
 
+typedef struct
+{
+  GstBin *parent;
+  GWeakRef child_ref;
+  gboolean called;
+} ReentrantRemoveData;
+
+static GstBusSyncReply
+remove_nested_bin_on_message (GstBus * bus, GstMessage * message,
+    gpointer user_data)
+{
+  ReentrantRemoveData *data = user_data;
+  GstElement *child;
+
+  if (GST_MESSAGE_TYPE (message) != GST_MESSAGE_APPLICATION)
+    return GST_BUS_PASS;
+
+  data->called = TRUE;
+
+  child = g_weak_ref_get (&data->child_ref);
+  fail_unless (child != NULL);
+  fail_unless (gst_bin_remove (data->parent, child));
+  gst_object_unref (child);
+
+  /* The nested bin's child-bus handler is still active and must keep the bin
+   * alive until the complete synchronous message route has unwound. */
+  child = g_weak_ref_get (&data->child_ref);
+  fail_unless (child != NULL);
+  gst_object_unref (child);
+
+  gst_message_unref (message);
+  return GST_BUS_DROP;
+}
+
+GST_START_TEST (test_reentrant_remove_keeps_nested_bin_alive)
+{
+  ReentrantRemoveData data = { 0, };
+  GstElement *pipeline, *child, *leaf;
+  GstBus *bus;
+  GObject *object;
+
+  pipeline = gst_pipeline_new (NULL);
+  fail_unless (pipeline != NULL);
+
+  child = gst_bin_new ("child");
+  fail_unless (child != NULL);
+  g_weak_ref_init (&data.child_ref, child);
+
+  leaf = gst_element_factory_make ("identity", "leaf");
+  fail_unless (leaf != NULL);
+  fail_unless (gst_bin_add (GST_BIN (child), leaf));
+  gst_object_ref (leaf);
+
+  fail_unless (gst_bin_add (GST_BIN (pipeline), child));
+
+  data.parent = GST_BIN (pipeline);
+  bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
+  fail_unless (bus != NULL);
+  gst_bus_set_sync_handler (bus, remove_nested_bin_on_message, &data, NULL);
+
+  fail_unless (gst_element_post_message (leaf,
+          gst_message_new_application (GST_OBJECT (leaf),
+              gst_structure_new_empty ("nested-bin-lifetime"))));
+  fail_unless (data.called);
+
+  object = g_weak_ref_get (&data.child_ref);
+  fail_unless (object == NULL);
+
+  g_weak_ref_clear (&data.child_ref);
+  gst_object_unref (leaf);
+  gst_object_unref (bus);
+  gst_object_unref (pipeline);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_retained_child_bus_after_bin_finalize)
+{
+  GstElement *bin, *leaf;
+  GstBus *child_bus;
+  GWeakRef bin_ref;
+  GObject *object;
+
+  bin = gst_bin_new (NULL);
+  fail_unless (bin != NULL);
+  g_weak_ref_init (&bin_ref, bin);
+
+  leaf = gst_element_factory_make ("identity", NULL);
+  fail_unless (leaf != NULL);
+  fail_unless (gst_bin_add (GST_BIN (bin), leaf));
+
+  child_bus = gst_element_get_bus (leaf);
+  fail_unless (child_bus != NULL);
+
+  gst_object_unref (bin);
+  object = g_weak_ref_get (&bin_ref);
+  fail_unless (object == NULL);
+
+  fail_unless (gst_bus_post (child_bus,
+          gst_message_new_application (NULL,
+              gst_structure_new_empty ("stale-child-bus"))));
+  fail_unless (!gst_bus_have_pending (child_bus));
+
+  g_weak_ref_clear (&bin_ref);
+  gst_object_unref (child_bus);
+}
+
+GST_END_TEST;
+
 GST_START_TEST (test_many_bins)
 {
   GstStateChangeReturn ret;
@@ -2016,6 +2125,8 @@ gst_bin_suite (void)
   tcase_add_test (tc_chain, test_iterate_sorted_unlinked);
   tcase_add_test (tc_chain, test_link_structure_change);
   tcase_add_test (tc_chain, test_state_failure_remove);
+  tcase_add_test (tc_chain, test_reentrant_remove_keeps_nested_bin_alive);
+  tcase_add_test (tc_chain, test_retained_child_bus_after_bin_finalize);
   tcase_add_test (tc_chain, test_state_failure_unref);
   tcase_add_test (tc_chain, test_state_change_skip);
   tcase_add_test (tc_chain, test_duration_is_max);
