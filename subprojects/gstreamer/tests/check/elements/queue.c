@@ -24,6 +24,7 @@
 #endif
 
 #include <gst/check/gstcheck.h>
+#include <gst/check/gstharness.h>
 
 #define UNDERRUN_LOCK() (g_mutex_lock (&underrun_mutex))
 #define UNDERRUN_UNLOCK() (g_mutex_unlock (&underrun_mutex))
@@ -1232,6 +1233,66 @@ GST_START_TEST (test_time_level_before_output)
 
 GST_END_TEST;
 
+static GstPadProbeReturn
+pause_queue_after_buffer (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
+{
+  fail_unless (gst_pad_pause_task (pad));
+  return GST_PAD_PROBE_REMOVE;
+}
+
+GST_START_TEST (test_leaky_downstream_after_segment_flush)
+{
+  GstHarness *h;
+  GstPad *srcpad;
+  GstSegment segment;
+  GstBuffer *buffer;
+  GstClockTime time;
+  const GstClockTime resumed_pts = 2785896921;
+
+  h = gst_harness_new ("queue");
+  g_object_set (h->element, "leaky", 2,
+      "max-size-time", 1100 * GST_MSECOND, NULL);
+  srcpad = gst_element_get_static_pad (h->element, "src");
+  gst_pad_add_probe (srcpad, GST_PAD_PROBE_TYPE_BUFFER,
+      pause_queue_after_buffer, NULL, NULL);
+  gst_harness_set_src_caps_str (h, "video/x-raw,format=I420,width=640,"
+      "height=388,framerate=30/1");
+
+  buffer = gst_buffer_new_allocate (NULL, 372480, NULL);
+  GST_BUFFER_PTS (buffer) = 0;
+  fail_unless_equals_int (gst_harness_push (h, buffer), GST_FLOW_OK);
+  gst_buffer_unref (gst_harness_pull (h));
+
+  /* Hold the output task so the segment/flush interleaving is deterministic.
+   * A segment applied to an empty queue is flushed before being dequeued.
+   * The next segment arrives behind a tag and must not make the empty queue
+   * appear full based on its position (REC-11995). */
+  GST_PAD_STREAM_LOCK (srcpad);
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  fail_unless (gst_harness_push_event (h, gst_event_new_segment (&segment)));
+  fail_unless (gst_harness_push_event (h, gst_event_new_flush_start ()));
+  fail_unless (gst_harness_push_event (h, gst_event_new_flush_stop (FALSE)));
+  fail_unless (gst_harness_push_event (h, gst_event_new_tag (
+              gst_tag_list_new (GST_TAG_TITLE, "resumed stream", NULL))));
+  segment.position = resumed_pts;
+  fail_unless (gst_harness_push_event (h, gst_event_new_segment (&segment)));
+
+  buffer = gst_buffer_new_allocate (NULL, 372480, NULL);
+  GST_BUFFER_PTS (buffer) = resumed_pts;
+  fail_unless_equals_int (gst_harness_push (h, buffer), GST_FLOW_OK);
+  g_object_get (h->element, "current-level-time", &time, NULL);
+  fail_unless_equals_uint64 (time, 0);
+  GST_PAD_STREAM_UNLOCK (srcpad);
+
+  buffer = gst_harness_pull (h);
+  fail_unless_equals_uint64 (GST_BUFFER_PTS (buffer), resumed_pts);
+  gst_buffer_unref (buffer);
+  gst_object_unref (srcpad);
+  gst_harness_teardown (h);
+}
+
+GST_END_TEST;
+
 static Suite *
 queue_suite (void)
 {
@@ -1256,6 +1317,7 @@ queue_suite (void)
   tcase_add_test (tc_chain, test_time_level_buffer_list);
   tcase_add_test (tc_chain, test_initial_events_nodelay);
   tcase_add_test (tc_chain, test_time_level_before_output);
+  tcase_add_test (tc_chain, test_leaky_downstream_after_segment_flush);
 
   return s;
 }
