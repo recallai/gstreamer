@@ -593,6 +593,76 @@ GST_START_TEST (test_rtph264depay_fu_a_missing_start)
 
 GST_END_TEST;
 
+static GstBuffer *
+rtp_empty_buffer (guint16 seq)
+{
+  GstBuffer *buffer = gst_rtp_buffer_new_allocate (0, 0, 0);
+  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+
+  fail_unless (gst_rtp_buffer_map (buffer, GST_MAP_WRITE, &rtp));
+  gst_rtp_buffer_set_payload_type (&rtp, 96);
+  gst_rtp_buffer_set_seq (&rtp, seq);
+  gst_rtp_buffer_set_timestamp (&rtp, 0x203b6ecf);
+  gst_rtp_buffer_set_ssrc (&rtp, 0x6c54218d);
+  gst_rtp_buffer_unmap (&rtp);
+
+  return buffer;
+}
+
+static GstBuffer *
+rtp_static_buffer_with_seq (guint8 * buf, gsize size, guint16 seq)
+{
+  GstBuffer *buffer = wrap_static_buffer (buf, size);
+  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
+
+  fail_unless (gst_rtp_buffer_map (buffer, GST_MAP_WRITE, &rtp));
+  gst_rtp_buffer_set_seq (&rtp, seq);
+  gst_rtp_buffer_unmap (&rtp);
+
+  return buffer;
+}
+
+/* Empty packets inside a FU-A take sequence numbers without being part of
+ * it, so its next fragment looks like a jump. */
+GST_START_TEST (test_rtph264depay_fu_a_seqnum_jump)
+{
+  GstHarness *h = gst_harness_new ("rtph264depay");
+  GstFlowReturn ret;
+  guint16 seq = 0x5fd2;
+  guint i;
+
+  gst_harness_set_caps_str (h,
+      "application/x-rtp,media=video,clock-rate=90000,encoding-name=H264",
+      "video/x-h264,alignment=au,stream-format=byte-stream");
+
+  ret = gst_harness_push (h, rtp_static_buffer_with_seq (rtp_h264_idr_fu_start,
+          sizeof (rtp_h264_idr_fu_start), seq));
+  fail_unless_equals_int (ret, GST_FLOW_OK);
+
+  for (i = 0; i < 3; i++) {
+    ret = gst_harness_push (h, rtp_empty_buffer (++seq));
+    fail_unless_equals_int (ret, GST_FLOW_OK);
+  }
+
+  ret = gst_harness_push (h, rtp_static_buffer_with_seq (rtp_h264_idr_fu_middle,
+          sizeof (rtp_h264_idr_fu_middle), ++seq));
+  fail_unless_equals_int (ret, GST_FLOW_OK);
+  fail_unless_equals_int (gst_harness_buffers_in_queue (h), 0);
+
+  ret = gst_harness_push (h, rtp_static_buffer_with_seq (rtp_h264_idr_fu_start,
+          sizeof (rtp_h264_idr_fu_start), ++seq));
+  fail_unless_equals_int (ret, GST_FLOW_OK);
+  ret = gst_harness_push (h, rtp_static_buffer_with_seq (rtp_h264_idr_fu_end,
+          sizeof (rtp_h264_idr_fu_end), ++seq));
+  fail_unless_equals_int (ret, GST_FLOW_OK);
+
+  fail_unless_equals_int (gst_harness_buffers_in_queue (h), 1);
+
+  gst_harness_teardown (h);
+}
+
+GST_END_TEST;
+
 
 /* As GStreamer does not have STAP-A yet, this was extracted from
  * issue #557 provided sample */
@@ -1469,6 +1539,7 @@ rtph264_suite (void)
   tcase_add_test (tc_chain, test_rtph264depay_stap_a_marker);
   tcase_add_test (tc_chain, test_rtph264depay_fu_a);
   tcase_add_test (tc_chain, test_rtph264depay_fu_a_missing_start);
+  tcase_add_test (tc_chain, test_rtph264depay_fu_a_seqnum_jump);
 
   tc_chain = tcase_create ("rtph264pay");
   suite_add_tcase (s, tc_chain);
