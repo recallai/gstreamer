@@ -1886,9 +1886,9 @@ gst_video_flip_class_init (GstVideoFlipClass * klass)
 static void
 gst_video_flip_init (GstVideoFlip * videoflip)
 {
-  /* AUTO is not valid for active method, this is just to ensure we setup the
+  /* AUTO is not valid for active/proposed method, this is just to ensure we
    * method in gst_video_flip_set_method() */
   videoflip->active_method = GST_VIDEO_ORIENTATION_AUTO;
-  videoflip->proposed_method = GST_VIDEO_ORIENTATION_IDENTITY;
+  videoflip->proposed_method = GST_VIDEO_ORIENTATION_AUTO;
   videoflip->configuring_method = GST_VIDEO_ORIENTATION_IDENTITY;
 }
