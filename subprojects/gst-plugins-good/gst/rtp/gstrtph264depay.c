@@ -1501,8 +1501,8 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
             MAX_FRAGMENTATION_UNIT_SIZE) {
           GST_WARNING_OBJECT (rtph264depay,
               "Too large fragmentation unit, dropping");
-          gst_rtp_base_depayload_flush (depayload, FALSE);
           gst_adapter_clear (rtph264depay->adapter);
+          rtph264depay->wait_start = TRUE;
           return NULL;
         }
         break;
