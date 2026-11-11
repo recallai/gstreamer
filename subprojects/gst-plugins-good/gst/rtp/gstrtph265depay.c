@@ -39,6 +39,7 @@ GST_DEBUG_CATEGORY_STATIC (rtph265depay_debug);
  * expressed a restriction or preference via caps */
 #define DEFAULT_STREAM_FORMAT GST_H265_STREAM_FORMAT_BYTESTREAM
 #define DEFAULT_ACCESS_UNIT   FALSE
+#define MAX_FRAGMENTATION_UNIT_SIZE (32 * 1024 * 1024)
 
 /* 3 zero bytes syncword */
 static const guint8 sync_bytes[] = { 0, 0, 0, 1 };
@@ -1522,6 +1523,13 @@ gst_rtp_h265_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
         if (E) {
           gst_rtp_h265_finish_fragmentation_unit (rtph265depay);
           GST_DEBUG_OBJECT (rtph265depay, "End of Fragmentation Unit");
+        } else if (gst_adapter_available (rtph265depay->adapter) >
+            MAX_FRAGMENTATION_UNIT_SIZE) {
+          GST_WARNING_OBJECT (rtph265depay,
+              "Too large fragmentation unit, dropping");
+          gst_rtp_base_depayload_flush (depayload, FALSE);
+          gst_adapter_clear (rtph265depay->adapter);
+          return NULL;
         }
         break;
       }

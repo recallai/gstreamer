@@ -41,6 +41,7 @@ GST_DEBUG_CATEGORY_STATIC (rtph264depay_debug);
 #define DEFAULT_ACCESS_UNIT   FALSE
 #define DEFAULT_WAIT_FOR_KEYFRAME FALSE
 #define DEFAULT_REQUEST_KEYFRAME FALSE
+#define MAX_FRAGMENTATION_UNIT_SIZE (32 * 1024 * 1024)
 
 enum
 {
@@ -1496,6 +1497,14 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
         /* if NAL unit ends, flush the adapter */
         if (E)
           gst_rtp_h264_finish_fragmentation_unit (rtph264depay);
+        else if (gst_adapter_available (rtph264depay->adapter) >
+            MAX_FRAGMENTATION_UNIT_SIZE) {
+          GST_WARNING_OBJECT (rtph264depay,
+              "Too large fragmentation unit, dropping");
+          gst_rtp_base_depayload_flush (depayload, FALSE);
+          gst_adapter_clear (rtph264depay->adapter);
+          return NULL;
+        }
         break;
       }
       default:
