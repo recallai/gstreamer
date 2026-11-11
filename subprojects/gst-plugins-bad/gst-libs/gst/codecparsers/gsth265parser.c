@@ -72,6 +72,11 @@
 #include <string.h>
 #include <math.h>
 
+#define MAX_DPB_SIZE 16
+
+/* ITU-T H.265 (V10) (07/2024) A.4.2, Table A.8: MaxSliceSegmentsPerPicture */
+#define GST_H265_MAX_SLICE_SEGMENTS_PER_PICTURE 1800
+
 #ifndef GST_DISABLE_GST_DEBUG
 #define GST_CAT_DEFAULT gst_h265_debug_category_get()
 static GstDebugCategory *
@@ -1135,7 +1140,8 @@ gst_h265_parser_parse_pic_timing (GstH265Parser * parser,
 
       if (hrd->sub_pic_hrd_params_present_flag
           && hrd->sub_pic_cpb_params_in_pic_timing_sei_flag) {
-        READ_UE (nr, tim->num_decoding_units_minus1);
+        READ_UE_MAX (nr, tim->num_decoding_units_minus1,
+            GST_H265_MAX_SLICE_SEGMENTS_PER_PICTURE - 1);
 
         READ_UINT8 (nr, tim->du_common_cpb_removal_delay_flag, 1);
         if (tim->du_common_cpb_removal_delay_flag)
@@ -1932,7 +1938,7 @@ gst_h265_parse_vps (GstH265NalUnit * nalu, GstH265VPS * vps)
     for (i = 1; i < vps->num_hrd_parameters; i++) {
       guint16 hrd_layer_set_idx;
       guint8 cprms_present_flag;
-      GstH265HRDParams hrd_params;
+      GstH265HRDParams hrd_params = { 0 };
 
       READ_UE_MAX (&nr, hrd_layer_set_idx, 1023);
       CHECK_ALLOWED_MAX (hrd_layer_set_idx, vps->num_layer_sets_minus1);

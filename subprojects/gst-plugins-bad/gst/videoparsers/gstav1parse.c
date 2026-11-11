@@ -197,7 +197,8 @@ _obu_name (GstAV1OBUType type)
 }
 
 static guint32
-_read_leb128 (guint8 * data, GstAV1ParserResult * retval, guint32 * comsumed)
+_read_leb128 (guint8 * data, gsize size, GstAV1ParserResult * retval,
+    guint32 * consumed)
 {
   guint8 leb128_byte = 0;
   guint64 value = 0;
@@ -206,7 +207,7 @@ _read_leb128 (guint8 * data, GstAV1ParserResult * retval, guint32 * comsumed)
   GstBitReader br;
   guint32 cur_pos;
 
-  gst_bit_reader_init (&br, data, 8);
+  gst_bit_reader_init (&br, data, size);
 
   cur_pos = gst_bit_reader_get_pos (&br);
   for (i = 0; i < 8; i++) {
@@ -217,14 +218,19 @@ _read_leb128 (guint8 * data, GstAV1ParserResult * retval, guint32 * comsumed)
       return 0;
     }
 
-    value |= (((gint) leb128_byte & 0x7f) << (i * 7));
+    value |= (((guint64) leb128_byte & 0x7f) << (i * 7));
     if (!(leb128_byte & 0x80))
       break;
+
+    if (i == 7) {
+      *retval = GST_AV1_PARSER_BITSTREAM_ERROR;
+      return 0;
+    }
   }
 
-  *comsumed = (gst_bit_reader_get_pos (&br) - cur_pos) / 8;
+  *consumed = (gst_bit_reader_get_pos (&br) - cur_pos) / 8;
   /* check for bitstream conformance see chapter4.10.5 */
-  if (value < G_MAXUINT32) {
+  if (value <= G_MAXUINT32) {
     *retval = GST_AV1_PARSER_OK;
     return (guint32) value;
   } else {
@@ -1937,13 +1943,13 @@ again:
     goto out;
   }
 
-  tu_sz = _read_leb128 (map_info.data, &res, &consumed);
+  tu_sz = _read_leb128 (map_info.data, map_info.size, &res, &consumed);
   if (tu_sz == 0 || res != GST_AV1_PARSER_OK) {
     /* error to get the TU size, should not be annex b. */
     goto out;
   }
 
-  if (tu_sz + consumed != map_info.size) {
+  if ((gsize) tu_sz + consumed != map_info.size) {
     GST_DEBUG_OBJECT (self, "Buffer size %" G_GSSIZE_FORMAT ", TU size %d,"
         " do not match.", map_info.size, tu_sz);
     goto out;
