@@ -41,6 +41,7 @@ GST_DEBUG_CATEGORY_STATIC (rtph264depay_debug);
 #define DEFAULT_ACCESS_UNIT   FALSE
 #define DEFAULT_WAIT_FOR_KEYFRAME FALSE
 #define DEFAULT_REQUEST_KEYFRAME FALSE
+#define MAX_FRAGMENTATION_UNIT_SIZE (32 * 1024 * 1024)
 
 enum
 {
@@ -1239,6 +1240,9 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
         /* fallthrough */
       case 24:
       {
+        if (payload_len < header_len)
+          goto short_payload;
+
         /* strip headers */
         payload += header_len;
         payload_len -= header_len;
@@ -1294,7 +1298,11 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
       case 26:
       case 27:
       {
-        const gsize aggregation_unit_size = nal_unit_type == 26 ? 5 : 6;
+        const gint aggregation_unit_size = nal_unit_type == 26 ? 5 : 6;
+
+        /* payload header and decoding order number base must be present */
+        if (payload_len < header_len + 2)
+          goto short_payload;
 
         /* strip headers */
         payload += header_len;
@@ -1489,6 +1497,15 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
         /* if NAL unit ends, flush the adapter */
         if (E)
           gst_rtp_h264_finish_fragmentation_unit (rtph264depay);
+        else if (gst_adapter_available (rtph264depay->adapter) >
+            MAX_FRAGMENTATION_UNIT_SIZE) {
+          GST_WARNING_OBJECT (rtph264depay,
+              "Too large fragmentation unit, dropping");
+          gst_adapter_clear (rtph264depay->adapter);
+          rtph264depay->current_fu_type = 0;
+          rtph264depay->wait_start = TRUE;
+          return NULL;
+        }
         break;
       }
       default:
@@ -1523,6 +1540,11 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
   return NULL;
 
   /* ERRORS */
+short_payload:
+  {
+    GST_DEBUG_OBJECT (rtph264depay, "RTP payload is too short for its NAL header");
+    return NULL;
+  }
 empty_packet:
   {
     GST_DEBUG_OBJECT (rtph264depay, "empty packet");
