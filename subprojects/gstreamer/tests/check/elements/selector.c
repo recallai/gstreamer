@@ -22,6 +22,10 @@
 #include "config.h"
 #endif
 
+#ifdef HAVE_VALGRIND
+# include <valgrind/valgrind.h>
+#endif
+
 #include <gst/check/gstcheck.h>
 
 #define NUM_SELECTOR_PADS 4
@@ -827,6 +831,65 @@ GST_START_TEST (test_output_selector_getcaps_active)
 
 GST_END_TEST;
 
+static gint tags_reader_stop;
+
+static gpointer
+read_pad_tags (gpointer user_data)
+{
+  GstPad *pad = user_data;
+
+  while (!g_atomic_int_get (&tags_reader_stop)) {
+    GstTagList *tags = NULL;
+
+    g_object_get (pad, "tags", &tags, NULL);
+    if (tags)
+      gst_tag_list_unref (tags);
+#ifdef HAVE_VALGRIND
+    /* Valgrind runs one thread at a time and would otherwise starve the main
+     * thread */
+    if (RUNNING_ON_VALGRIND)
+      THREAD_SWITCH ();
+#endif
+  }
+
+  return NULL;
+}
+
+GST_START_TEST (test_input_selector_read_tags_during_reset)
+{
+  GstElement *isel;
+  GstPad *sinkpad;
+  GThread *reader;
+  guint i;
+
+  isel = gst_check_setup_element ("input-selector");
+  sinkpad = gst_element_request_pad_simple (isel, "sink_%u");
+
+  g_atomic_int_set (&tags_reader_stop, FALSE);
+  reader = g_thread_new ("tags-reader", read_pad_tags, sinkpad);
+
+  /* Each PAUSED to READY transition clears the tags while the reader thread
+   * reads them through the pad's "tags" property */
+  for (i = 0; i < 2000; i++) {
+    fail_unless_equals_int (gst_element_set_state (isel, GST_STATE_PAUSED),
+        GST_STATE_CHANGE_SUCCESS);
+    gst_pad_send_event (sinkpad, gst_event_new_stream_start ("test"));
+    gst_pad_send_event (sinkpad,
+        gst_event_new_tag (gst_tag_list_new (GST_TAG_TITLE, "test", NULL)));
+    fail_unless_equals_int (gst_element_set_state (isel, GST_STATE_READY),
+        GST_STATE_CHANGE_SUCCESS);
+  }
+
+  g_atomic_int_set (&tags_reader_stop, TRUE);
+  g_thread_join (reader);
+
+  gst_element_release_request_pad (isel, sinkpad);
+  gst_object_unref (sinkpad);
+  gst_check_teardown_element (isel);
+}
+
+GST_END_TEST;
+
 
 static Suite *
 selector_suite (void)
@@ -841,6 +904,7 @@ selector_suite (void)
   tcase_add_test (tc_chain, test_input_selector_shorter_stream);
   tcase_add_test (tc_chain, test_input_selector_switch_to_eos_stream);
   tcase_add_test (tc_chain, test_output_selector_no_srcpad_negotiation);
+  tcase_add_test (tc_chain, test_input_selector_read_tags_during_reset);
 
   tc_chain = tcase_create ("output-selector-negotiation");
   tcase_add_checked_fixture (tc_chain, setup_output_selector,
